@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Check-ins</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f5f2;
+    --surface: #ffffff;
+    --text: #1e1d1b;
+    --muted: #6d6962;
+    --border: #e3e0d9;
+    --accent: #e0702c;
+    --highlight: #ffe9d2;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151413;
+      --surface: #1f1e1c;
+      --text: #ecebe7;
+      --muted: #a29e96;
+      --border: #34322e;
+      --accent: #d9692a;
+      --highlight: #4a3220;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+  .wrap.wide { max-width: 1280px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 16px 0 12px; }
+  .title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0; }
+  .tabs { display: flex; gap: 2px; background: var(--bg); padding: 3px; border-radius: 9px; }
+  .tabs button {
+    border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px;
+    padding: 6px 14px; border-radius: 7px; cursor: pointer;
+  }
+  .tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.15); }
+  .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; align-items: end; }
+  #q, .filters input, .filters select, .filters button {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 0; width: 100%;
+  }
+  #q { display: block; margin-bottom: 8px; }
+  .field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  .actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .check { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+  .filters .check input { width: auto; }
+  .filters button { width: auto; cursor: pointer; }
+  #summary { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
+
+  .month {
+    position: sticky; top: 0; z-index: 1; margin: 0; padding: 14px 0 8px;
+    background: var(--bg); font-size: 15px; display: flex; justify-content: space-between;
+  }
+  .month .count { color: var(--muted); font-weight: normal; font-size: 14px; }
+  .checkin {
+    display: grid; grid-template-columns: 40px 1fr; gap: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 8px;
+  }
+  .checkin.flash { animation: flash 2.5s ease-out; }
+  @keyframes flash { from { background: var(--highlight); } to { background: var(--surface); } }
+  .icon {
+    width: 40px; height: 40px; border-radius: 50%; background: var(--accent);
+    display: grid; place-items: center; overflow: hidden;
+  }
+  .icon img { width: 26px; height: 26px; }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .head h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+  .head a { flex: none; font-size: 13px; color: var(--muted); text-decoration: none; }
+  .head a:hover { color: var(--accent); }
+  .meta { font-size: 13.5px; color: var(--muted); }
+  .muted { color: var(--muted); font-weight: normal; }
+  .badge { font-size: 12px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+  .shout { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .thumb, .tile { border: 0; padding: 0; background: var(--border); cursor: zoom-in; border-radius: 6px; overflow: hidden; }
+  .thumb img { display: block; width: 96px; height: 96px; object-fit: cover; }
+  img.broken { visibility: hidden; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; padding: 16px 0; }
+  .tile { border-radius: 4px; aspect-ratio: 1; }
+  .tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  #empty { text-align: center; color: var(--muted); padding: 48px 0; }
+  #sentinel { height: 1px; }
+  footer { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 0 40px; }
+
+  dialog {
+    width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; margin: 0; padding: 0;
+    border: 0; background: rgb(12 12 12 / 0.95); color: #f2f2f2;
+  }
+  dialog[open] { display: grid; grid-template-columns: 56px 1fr 56px; align-items: center; }
+  dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+  dialog figure { grid-column: 2; margin: 0; display: flex; flex-direction: column; align-items: center; gap: 12px; min-width: 0; }
+  #lb-img { max-width: 100%; max-height: calc(100vh - 170px); object-fit: contain; }
+  #lb-cap { text-align: center; font-size: 14px; max-width: 640px; }
+  #lb-cap .meta { color: #b9b6b0; }
+  #lb-cap button, dialog .nav {
+    font: inherit; color: inherit; background: rgb(255 255 255 / 0.12); border: 0; border-radius: 8px; cursor: pointer;
+  }
+  #lb-cap button { font-size: 13px; padding: 5px 12px; margin-top: 8px; }
+  dialog .nav { width: 44px; height: 44px; font-size: 26px; justify-self: center; }
+  dialog .close { position: absolute; top: 12px; right: 12px; }
+  @media (max-width: 600px) {
+    dialog[open] { grid-template-columns: 0 1fr 0; }
+    dialog .nav.side { position: absolute; bottom: 16px; }
+    dialog .prev { left: 16px; }
+    dialog .next { right: 16px; }
+    #lb-img { max-height: calc(100vh - 220px); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap wide">
+    <div class="title-row">
+      <h1>Check-ins</h1>
+      <nav class="tabs" aria-label="View">
+        <button type="button" data-view="timeline" aria-selected="true">Timeline</button>
+        <button type="button" data-view="photos" aria-selected="false">Photos</button>
+      </nav>
+    </div>
+    <input type="search" id="q" placeholder="Search venues, shouts, places, people…" aria-label="Search">
+    <div class="filters">
+      <select id="category" aria-label="Category"><option value="">All categories</option></select>
+      <select id="country" aria-label="Country"><option value="">All countries</option></select>
+      <select id="city" aria-label="City" disabled><option value="">All cities</option></select>
+      <label class="field">From <input type="month" id="from" placeholder="YYYY-MM"></label>
+      <label class="field">To <input type="month" id="to" placeholder="YYYY-MM"></label>
+      <div class="actions">
+        <label class="check"><input type="checkbox" id="has-photos"> With photos</label>
+        <button type="button" id="clear">Clear</button>
+      </div>
+    </div>
+    <p id="summary" aria-live="polite"></p>
+  </div>
+</header>
+<main>
+  <div class="wrap" id="timeline"></div>
+  <div class="wrap wide" hidden><div class="grid" id="photos"></div></div>
+  <p id="empty" hidden>No check-ins match these filters.</p>
+  <div id="sentinel"></div>
+</main>
+<footer id="footer"></footer>
+
+<dialog id="lightbox" aria-label="Photo">
+  <button type="button" class="nav side prev" aria-label="Previous photo">‹</button>
+  <figure>
+    <img id="lb-img" alt="">
+    <figcaption id="lb-cap"></figcaption>
+  </figure>
+  <button type="button" class="nav side next" aria-label="Next photo">›</button>
+  <button type="button" class="nav close" aria-label="Close">×</button>
+</dialog>
+
+<script src="data.js"></script>
+<script>
+(() => {
+  "use strict";
+  const $ = (sel) => document.querySelector(sel);
+  const DATA = window.SWARM_DATA;
+  if (!DATA) {
+    $("#summary").textContent = "data.js is missing. Run swarm_export.py to generate it next to this file.";
+    return;
+  }
+
+  const CHUNK = 300;
+  const cats = DATA.categories;
+  const nf = new Intl.NumberFormat();
+  // Check-in times are shifted to their local wall clock, so format them as UTC.
+  const fmtMonth = new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+  const fmtWhen = new Intl.DateTimeFormat(undefined, {
+    weekday: "short", month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", timeZone: "UTC",
+  });
+  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ESCAPES[ch]);
+  const fold = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+  function ancestors(id) {
+    const out = [];
+    while (id && cats[id] && !out.includes(id)) {
+      out.push(id);
+      id = cats[id].parent;
+    }
+    return out;
+  }
+
+  const checkins = DATA.checkins.map((c, i) => {
+    const v = c.venue;
+    const cat = v && cats[v.categoryId];
+    const local = new Date((c.createdAt + c.tz * 60) * 1000);
+    return {
+      ...c,
+      i,
+      local,
+      month: local.toISOString().slice(0, 7),
+      catIds: v ? ancestors(v.categoryId) : [],
+      catName: cat ? cat.name : "",
+      place: v ? [...new Set([v.city, v.state, v.country].filter(Boolean))].join(", ") : "",
+      text: fold([v && v.name, c.shout, v && v.address, v && v.city, v && v.state, v && v.country,
+                  cat && cat.name, c.event, ...c.with].filter(Boolean).join(" ")),
+    };
+  });
+
+  // ---- Filter controls ----
+  const els = {
+    q: $("#q"), category: $("#category"), country: $("#country"), city: $("#city"),
+    from: $("#from"), to: $("#to"), photos: $("#has-photos"),
+  };
+
+  function countBy(items, key) {
+    const counts = new Map();
+    for (const item of items) {
+      const k = key(item);
+      if (k) counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    return counts;
+  }
+
+  function fillSelect(select, allLabel, entries) {
+    select.replaceChildren(new Option(allLabel, ""), ...entries.map(([value, label]) => new Option(label, value)));
+  }
+
+  function buildCategoryOptions() {
+    // Visited categories plus their ancestors, as an indented tree with counts.
+    const counts = new Map();
+    for (const c of checkins) for (const id of c.catIds) counts.set(id, (counts.get(id) || 0) + 1);
+    const children = new Map();
+    for (const id of counts.keys()) {
+      const parent = cats[id].parent && counts.has(cats[id].parent) ? cats[id].parent : "";
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(id);
+    }
+    const entries = [];
+    (function walk(parent, depth) {
+      const ids = (children.get(parent) || []).sort((a, b) => cats[a].name.localeCompare(cats[b].name));
+      for (const id of ids) {
+        entries.push([id, " ".repeat(depth) + `${cats[id].name} (${nf.format(counts.get(id))})`]);
+        walk(id, depth + 1);
+      }
+    })("", 0);
+    fillSelect(els.category, "All categories", entries);
+  }
+
+  function buildPlaceOptions(select, allLabel, counts) {
+    const entries = [...counts].sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, n]) => [name, `${name} (${nf.format(n)})`]);
+    fillSelect(select, allLabel, entries);
+  }
+
+  function buildCityOptions() {
+    const country = els.country.value;
+    els.city.disabled = !country;
+    const inCountry = checkins.filter((c) => c.venue && c.venue.country === country);
+    buildPlaceOptions(els.city, "All cities", countBy(inCountry, (c) => c.venue.city));
+  }
+
+  const validMonth = (s) => (/^\d{4}-\d{2}$/.test(s) ? s : "");
+
+  function currentFilters() {
+    return {
+      words: fold(els.q.value).split(/\s+/).filter(Boolean),
+      category: els.category.value,
+      country: els.country.value,
+      city: els.city.value,
+      from: validMonth(els.from.value),
+      to: validMonth(els.to.value),
+      photos: els.photos.checked,
+    };
+  }
+
+  function matches(c, f) {
+    if (f.photos && !c.photos.length) return false;
+    if (f.category && !c.catIds.includes(f.category)) return false;
+    if (f.country && !(c.venue && c.venue.country === f.country)) return false;
+    if (f.city && c.venue.city !== f.city) return false;
+    if (f.from && c.month < f.from) return false;
+    if (f.to && c.month > f.to) return false;
+    return f.words.every((w) => c.text.includes(w));
+  }
+
+  // ---- Rendering ----
+  const timelineEl = $("#timeline");
+  const photosEl = $("#photos");
+  const sentinel = $("#sentinel");
+  let view = "timeline";
+  let filtered = checkins;
+  let photos = [];          // [{ c, p }] across the filtered check-ins
+  let photoIndex = new Map(); // "checkinIndex:photoIndex" -> index in `photos`
+  let monthCounts = new Map();
+  let rendered = 0;
+
+  function applyFilters() {
+    const f = currentFilters();
+    filtered = checkins.filter((c) => matches(c, f));
+    photos = filtered.flatMap((c) => c.photos.map((p) => ({ c, p })));
+    photoIndex = new Map(photos.map(({ c, p }, j) => [`${c.i}:${c.photos.indexOf(p)}`, j]));
+    monthCounts = countBy(filtered, (c) => c.month);
+    const total = checkins.length;
+    $("#summary").textContent =
+      `${nf.format(filtered.length)} check-ins` +
+      (filtered.length < total ? ` of ${nf.format(total)}` : "") +
+      ` · ${nf.format(photos.length)} photos`;
+    resetView();
+  }
+
+  function checkinHtml(c) {
+    const v = c.venue;
+    const cat = v && cats[v.categoryId];
+    const icon = cat && cat.icon ? `<img src="${esc(cat.icon)}" alt="">` : "";
+    const thumbs = c.photos.map((p, k) =>
+      `<button type="button" class="thumb" data-key="${c.i}:${k}" aria-label="View photo">` +
+      `<img src="${esc(p.src)}" alt="" loading="lazy" decoding="async"></button>`).join("");
+    return `<article class="checkin" id="c-${esc(c.id)}">
+      <div class="icon" title="${esc(c.catName)}">${icon}</div>
+      <div>
+        <div class="head">
+          <h3>${v ? esc(v.name) : '<span class="muted">No venue</span>'}</h3>
+          ${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener">Swarm ↗</a>` : ""}
+        </div>
+        ${c.catName || c.place ? `<div class="meta">${[c.catName, c.place].filter(Boolean).map(esc).join(" · ")}</div>` : ""}
+        <div class="meta"><time>${esc(fmtWhen.format(c.local))}</time>${c.private ? ' · <span class="badge">Private</span>' : ""}</div>
+        ${c.shout ? `<p class="shout">${esc(c.shout)}</p>` : ""}
+        ${c.with.length ? `<div class="meta">With ${esc(c.with.join(", "))}</div>` : ""}
+        ${c.event ? `<div class="meta">At ${esc(c.event)}</div>` : ""}
+        ${thumbs ? `<div class="thumbs">${thumbs}</div>` : ""}
+      </div>
+    </article>`;
+  }
+
+  const itemCount = () => (view === "timeline" ? filtered.length : photos.length);
+
+  function renderMore() {
+    const end = Math.min(rendered + CHUNK, itemCount());
+    let html = "";
+    for (let i = rendered; i < end; i++) {
+      if (view === "timeline") {
+        const c = filtered[i];
+        if (i === 0 || filtered[i - 1].month !== c.month) {
+          html += `<h2 class="month"><span>${esc(fmtMonth.format(c.local))}</span>` +
+                  `<span class="count">${nf.format(monthCounts.get(c.month))}</span></h2>`;
+        }
+        html += checkinHtml(c);
+      } else {
+        const { c, p } = photos[i];
+        html += `<button type="button" class="tile" data-idx="${i}" aria-label="View photo">` +
+                `<img src="${esc(p.src)}" alt="${esc(c.venue ? c.venue.name : "")}" loading="lazy" decoding="async"></button>`;
+      }
+    }
+    (view === "timeline" ? timelineEl : photosEl).insertAdjacentHTML("beforeend", html);
+    rendered = end;
+  }
+
+  // Re-observing makes the observer report the sentinel's current state again,
+  // so rendering continues while it stays in view.
+  const observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && rendered < itemCount()) {
+      renderMore();
+      observer.unobserve(sentinel);
+      observer.observe(sentinel);
+    }
+  }, { rootMargin: "1500px 0px" });
+
+  function resetView() {
+    timelineEl.replaceChildren();
+    photosEl.replaceChildren();
+    rendered = 0;
+    renderMore();
+    $("#empty").hidden = itemCount() > 0;
+    $("#empty").textContent = view === "timeline"
+      ? "No check-ins match these filters."
+      : "No photos match these filters.";
+    observer.unobserve(sentinel);
+    observer.observe(sentinel);
+  }
+
+  function setView(name) {
+    view = name;
+    for (const tab of document.querySelectorAll(".tabs button")) {
+      tab.setAttribute("aria-selected", String(tab.dataset.view === name));
+    }
+    timelineEl.hidden = name !== "timeline";
+    photosEl.parentElement.hidden = name !== "photos";
+    window.scrollTo(0, 0);
+    resetView();
+  }
+
+  function showInTimeline(c) {
+    if (view !== "timeline") setView("timeline");
+    const idx = filtered.indexOf(c);
+    while (rendered <= idx) renderMore();
+    const el = document.getElementById(`c-${c.id}`);
+    el.scrollIntoView({ block: "center" });
+    el.classList.remove("flash");
+    void el.offsetWidth; // restart the animation
+    el.classList.add("flash");
+  }
+
+  // ---- Lightbox ----
+  const lightbox = $("#lightbox");
+  let lbIndex = 0;
+
+  function showPhoto(j) {
+    lbIndex = (j + photos.length) % photos.length;
+    const { c, p } = photos[lbIndex];
+    $("#lb-img").src = p.src;
+    $("#lb-img").alt = c.venue ? c.venue.name : "";
+    $("#lb-cap").innerHTML = `
+      <div><strong>${c.venue ? esc(c.venue.name) : "No venue"}</strong></div>
+      <div class="meta">${[c.catName, c.place].filter(Boolean).map(esc).join(" · ")}</div>
+      <div class="meta">${esc(fmtWhen.format(c.local))} · ${nf.format(lbIndex + 1)} of ${nf.format(photos.length)}</div>
+      ${c.shout ? `<div>${esc(c.shout)}</div>` : ""}
+      <button type="button" id="lb-timeline">Show in timeline</button>`;
+    if (!lightbox.open) lightbox.showModal();
+  }
+
+  lightbox.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t.closest(".prev")) showPhoto(lbIndex - 1);
+    else if (t.closest(".next")) showPhoto(lbIndex + 1);
+    else if (t.closest(".close") || t === lightbox) lightbox.close();
+    else if (t.id === "lb-timeline") {
+      lightbox.close();
+      showInTimeline(photos[lbIndex].c);
+    }
+  });
+  lightbox.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") showPhoto(lbIndex - 1);
+    if (e.key === "ArrowRight") showPhoto(lbIndex + 1);
+  });
+  lightbox.addEventListener("close", () => { $("#lb-img").removeAttribute("src"); });
+
+  // ---- Wiring ----
+  timelineEl.addEventListener("click", (e) => {
+    const thumb = e.target.closest(".thumb");
+    if (thumb) showPhoto(photoIndex.get(thumb.dataset.key));
+  });
+  photosEl.addEventListener("click", (e) => {
+    const tile = e.target.closest(".tile");
+    if (tile) showPhoto(Number(tile.dataset.idx));
+  });
+  for (const tab of document.querySelectorAll(".tabs button")) {
+    tab.addEventListener("click", () => { if (tab.dataset.view !== view) setView(tab.dataset.view); });
+  }
+  let searchTimer;
+  els.q.addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(applyFilters, 150);
+  });
+  els.country.addEventListener("change", () => { buildCityOptions(); applyFilters(); });
+  for (const el of [els.category, els.city, els.from, els.to, els.photos]) {
+    el.addEventListener("change", applyFilters);
+  }
+  $("#clear").addEventListener("click", () => {
+    for (const el of [els.q, els.category, els.country, els.from, els.to]) el.value = "";
+    els.photos.checked = false;
+    buildCityOptions();
+    applyFilters();
+  });
+  // Hide icons or photos whose files are missing instead of showing broken images.
+  document.addEventListener("error", (e) => {
+    if (e.target.tagName === "IMG") e.target.classList.add("broken");
+  }, true);
+
+  const months = checkins.map((c) => c.month).sort();
+  for (const el of [els.from, els.to]) {
+    el.min = months[0] || "";
+    el.max = months[months.length - 1] || "";
+  }
+  $("#footer").textContent = `Exported ${new Date(DATA.generatedAt * 1000).toLocaleString()}`;
+  buildCategoryOptions();
+  buildPlaceOptions(els.country, "All countries", countBy(checkins, (c) => c.venue && c.venue.country));
+  buildCityOptions();
+  applyFilters();
+})();
+</script>
+</body>
+</html>
