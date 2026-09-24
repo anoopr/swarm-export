@@ -5,7 +5,11 @@ Writes month files (YYYY/MM/YYYY-MM-checkins.json) with full-resolution photos
 alongside, the Foursquare category taxonomy and icons (categories/), and an
 offline HTML viewer (index.html). See README.md for setup.
 
-Credentials come from environment variables or a .env file next to this script:
+Re-runs are incremental: only check-ins from the last 30 days before your newest
+exported one are re-fetched. Use --full to re-fetch everything.
+
+Credentials come from environment variables or a .env file next to this script
+(copy .env.example to start one):
 
     FSQ_TOKEN=...  ./swarm_export.py
 
@@ -16,6 +20,7 @@ Credentials come from environment variables or a .env file next to this script:
 from __future__ import annotations
 
 import argparse
+import glob
 import http.client
 import http.server
 import json
@@ -37,6 +42,9 @@ TOKEN_URL = "https://foursquare.com/oauth2/access_token"
 # Foursquare's `v` param is a YYYYMMDD date that pins the response format.
 API_VERSION = "20260223"
 PAGE_SIZE = 250  # max the endpoint allows
+# Incremental runs re-fetch this far back from the newest exported check-in, to
+# pick up recent edits, late photos, and deletions.
+OVERLAP_DAYS = 30
 MAX_RETRIES = 5
 DOWNLOAD_WORKERS = 8
 ICON_SIZE = "512"  # largest size the icon CDN serves
@@ -112,7 +120,12 @@ def api_get(endpoint: str, params: dict, token: str) -> dict:
     return json.loads(fetch_bytes(f"{API_BASE}{endpoint}?{query}"))["response"]
 
 
-def fetch_all_checkins(token: str) -> list[dict]:
+def utc_date(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def fetch_checkins(token: str, since: int | None = None) -> list[dict]:
+    """Fetch check-ins newest first, back to `since` (unix seconds) or the very first one."""
     # Page backwards with beforeTimestamp: Foursquare stops honoring `offset`
     # after a few hundred results and silently repeats the first page.
     checkins: list[dict] = []
@@ -129,12 +142,45 @@ def fetch_all_checkins(token: str) -> list[dict]:
         seen.update(c["id"] for c in new)
         checkins.extend(new)
         oldest = min(c["createdAt"] for c in new)
+        log(f"Fetched {len(checkins)} of {page.get('count', '?')} check-ins (back to {utc_date(oldest)})")
+        if since is not None and oldest < since:
+            break
         # +1 so check-ins sharing the oldest second aren't skipped; repeats
         # are filtered by id above.
         before = oldest + 1
-        date = datetime.fromtimestamp(oldest, tz=timezone.utc).strftime("%Y-%m-%d")
-        log(f"Fetched {len(checkins)} of {page.get('count', '?')} check-ins (back to {date})")
+    if not checkins:
+        # Guards against wiping the export if the API misbehaves.
+        raise ExportError("The API returned no check-ins; leaving the export untouched.")
     return checkins
+
+
+def month_files(out_dir: str) -> list[str]:
+    return glob.glob(os.path.join(out_dir, "[0-9]" * 4, "[0-9]" * 2, "*-checkins.json"))
+
+
+def load_existing(out_dir: str) -> list[dict]:
+    """Check-ins from a previous export's month files."""
+    checkins = []
+    for path in month_files(out_dir):
+        try:
+            with open(path, encoding="utf-8") as f:
+                checkins.extend(json.load(f))
+        except ValueError as e:
+            raise ExportError(f"Couldn't read {path} ({e}); run with --full to rebuild the export.") from None
+    return checkins
+
+
+def merge_checkins(existing: list[dict], fetched: list[dict], since: int) -> list[dict]:
+    """Combine a previous export with freshly fetched check-ins. Fetched copies win,
+    and check-ins from `since` onward that the API no longer returns were deleted."""
+    fetched_ids = {c["id"] for c in fetched}
+    old = {c["id"]: c for c in existing}
+    kept = [c for c in existing if c["id"] not in fetched_ids and c["createdAt"] < since]
+    added = sum(c["id"] not in old for c in fetched)
+    changed = sum(c["id"] in old and old[c["id"]] != c for c in fetched)
+    deleted = sum(c["id"] not in fetched_ids and c["createdAt"] >= since for c in existing)
+    log(f"{added} new, {changed} changed, {deleted} deleted check-ins")
+    return sorted(fetched + kept, key=lambda c: c["createdAt"], reverse=True)
 
 
 def fetch_categories(token: str) -> list[dict]:
@@ -179,20 +225,38 @@ def icon_path(icon: dict) -> str:
     return f"categories/icons/{name}{icon['suffix']}"
 
 
-def write_json(path: str, data) -> None:
+def write_json(path: str, data) -> bool:
+    """Write data as JSON unless the file already holds exactly that; return whether it was written."""
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return False
+    except FileNotFoundError:
+        pass
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+        f.write(text)
+    return True
 
 
 def write_month_files(checkins: list[dict], out_dir: str) -> None:
     months: dict[str, list[dict]] = defaultdict(list)
     for c in checkins:
         months[local_time(c).strftime("%Y/%m")].append(c)
-    for month, items in months.items():
-        write_json(os.path.join(out_dir, month, f"{month.replace('/', '-')}-checkins.json"), items)
-    log(f"Wrote {len(checkins)} check-ins into {len(months)} month files")
+    paths = {
+        os.path.normpath(os.path.join(out_dir, month, f"{month.replace('/', '-')}-checkins.json")): items
+        for month, items in months.items()
+    }
+    written = sum(write_json(path, items) for path, items in paths.items())
+    # Months whose check-ins were all deleted lose their file (photos are kept).
+    stale = [path for path in map(os.path.normpath, month_files(out_dir)) if path not in paths]
+    for path in stale:
+        os.remove(path)
+    log(
+        f"{len(checkins)} check-ins across {len(months)} months; updated {written} month files"
+        + (f", removed {len(stale)}" if stale else "")
+    )
 
 
 def download_all(jobs: dict[str, str], label: str) -> list[str]:
@@ -343,32 +407,45 @@ def get_token() -> str:
     client_secret = os.environ.get("FSQ_CLIENT_SECRET")
     if not (client_id and client_secret):
         raise ExportError(
-            "Set FSQ_TOKEN, or FSQ_CLIENT_ID and FSQ_CLIENT_SECRET to log in. See README.md."
+            "Set FSQ_TOKEN, or FSQ_CLIENT_ID and FSQ_CLIENT_SECRET to log in: copy .env.example "
+            "to .env and fill it in. See README.md."
         )
     token = authorize(client_id, client_secret)
-    log(f"Got access token. To skip login next time, add it to .env:\n  FSQ_TOKEN={token}")
+    log(f"Got access token. To skip login next time, set it in .env:\n  FSQ_TOKEN={token}")
     return token
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export your Swarm check-ins, photos, and categories.")
     parser.add_argument("-o", "--out-dir", default="export", help="output directory (default: export)")
+    parser.add_argument(
+        "--full", action="store_true",
+        help=f"re-fetch every check-in and the category taxonomy, not just the last {OVERLAP_DAYS} days",
+    )
     parser.add_argument("--no-photos", action="store_true", help="skip downloading check-in photos")
     args = parser.parse_args()
     load_dotenv(os.path.join(SCRIPT_DIR, ".env"))
     out = args.out_dir
+    taxonomy_path = os.path.join(out, "categories", "categories.json")
 
     try:
         token = get_token()
-        checkins = fetch_all_checkins(token)
-        taxonomy = fetch_categories(token)
+        existing = [] if args.full else load_existing(out)
+        if existing:
+            since = max(c["createdAt"] for c in existing) - OVERLAP_DAYS * 86400
+            log(f"Updating {len(existing)} exported check-ins; re-checking from {utc_date(since)} on")
+            checkins = merge_checkins(existing, fetch_checkins(token, since), since)
+        else:
+            checkins = fetch_checkins(token)
+        if args.full or not os.path.exists(taxonomy_path):
+            write_json(taxonomy_path, fetch_categories(token))
     except ExportError as e:
         log(f"Error: {e}")
         return 1
 
     write_month_files(checkins, out)
-    write_json(os.path.join(out, "categories", "categories.json"), taxonomy)
-    categories = flatten_categories(taxonomy, checkins)
+    with open(taxonomy_path, encoding="utf-8") as f:
+        categories = flatten_categories(json.load(f), checkins)
 
     icons = {
         os.path.join(out, icon_path(cat["icon"])): cat["icon"]["prefix"] + ICON_SIZE + cat["icon"]["suffix"]

@@ -6,23 +6,24 @@ Exports your full Swarm / Foursquare check-in history, with full-resolution phot
 
 1. Sign in at <https://foursquare.com/developers/> and create an app (any name works).
 2. In the app's settings, set **Redirect URL** to `http://localhost:8765/callback`.
-3. Note the app's **Client ID** and **Client Secret**.
+3. Copy the example config. `.env` is gitignored, so your credentials stay out of the repo:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+4. In `.env`, set `FSQ_CLIENT_ID` and `FSQ_CLIENT_SECRET` to your app's **Client ID** and **Client Secret**.
+5. Run the script once. With no token yet, it opens your browser so you can approve access, then prints an access token:
+
+   ```bash
+   python3 swarm_export.py
+   ```
+
+6. Paste that token into `.env` as `FSQ_TOKEN`. Later runs use it directly and skip the login.
+
+Variables already set in your shell take precedence over `.env`.
 
 ## Usage
-
-On the first run, provide the client credentials. The script opens your browser so you can approve access, then prints an access token:
-
-```bash
-FSQ_CLIENT_ID=your_id FSQ_CLIENT_SECRET=your_secret python3 swarm_export.py
-```
-
-After that, save the token in a `.env` file next to the script. It's gitignored, and variables already set in your environment take precedence:
-
-```
-FSQ_TOKEN=your_token
-```
-
-Then just run:
 
 ```bash
 python3 swarm_export.py
@@ -31,9 +32,21 @@ python3 swarm_export.py
 | Flag | Default | |
 |---|---|---|
 | `-o, --out-dir` | `export` | Where to write everything |
+| `--full` | off | Re-fetch every check-in and the category taxonomy |
 | `--no-photos` | off | Skip downloading photos |
 
-Re-running is safe and quick. Check-ins are re-fetched in full, which takes about 55 API calls. Photos and icons already on disk are skipped, so only new ones are downloaded.
+### Re-running
+
+Re-runs are incremental and take a couple of seconds.
+
+- **Check-ins:** the script loads the existing month files and fetches only check-ins from 30 days before your newest exported one onward, usually a single API call. Everything it fetches replaces the copy on disk, so new check-ins, edited shouts, late photos, and deleted check-ins in that window are all picked up.
+- **Files:** only month files whose contents changed are rewritten.
+- **Categories:** the category list is reused from `categories/categories.json`.
+- **Photos and icons:** anything already on disk is skipped.
+
+Edits or deletions to check-ins older than that window are only picked up by `--full`, which re-fetches everything (about 55 API calls).
+
+In either mode, a month whose check-ins have all been deleted loses its JSON file, but its photos are kept. If the API ever returns no check-ins at all, the script stops without touching the export.
 
 ## Output
 
